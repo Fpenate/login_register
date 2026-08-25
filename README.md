@@ -114,3 +114,47 @@ INSERT INTO `locatios` VALUES (1,'CFB-001','BANDEJA','AVAILABLE'),(2,'CFB-002','
 /*!40000 ALTER TABLE `locatios` ENABLE KEYS */;
 UNLOCK TABLES;
 
+------
+WITH numbered AS (
+    SELECT
+        id,
+        location_code,
+        location_type,
+        CAST(SUBSTRING_INDEX(location_code, '-', -1) AS UNSIGNED) AS num
+    FROM conformal_inventory_db.locatios
+    WHERE location_type IN ('BANDEJA','CAJON')
+),
+with_next AS (
+    SELECT
+        id, location_code, location_type, num,
+        LEAD(num) OVER (PARTITION BY location_type ORDER BY num) AS next_num
+    FROM numbered
+),
+candidatos AS (
+    -- Caso 1: existe un salto en la secuencia -> nos quedamos con el primero que aparece
+    SELECT
+        id, location_code, location_type, num,
+        0 AS prioridad,
+        ROW_NUMBER() OVER (PARTITION BY location_type ORDER BY num) AS rn
+    FROM with_next
+    WHERE next_num IS NOT NULL AND next_num <> num + 1
+
+    UNION ALL
+
+    -- Caso 2 (fallback): no hay saltos -> tomamos el último registro (el de mayor correlativo)
+    SELECT
+        id, location_code, location_type, num,
+        1 AS prioridad,
+        ROW_NUMBER() OVER (PARTITION BY location_type ORDER BY num DESC) AS rn
+    FROM with_next
+    WHERE next_num IS NULL
+)
+SELECT id, location_code, location_type
+FROM (
+    SELECT
+        id, location_code, location_type,
+        ROW_NUMBER() OVER (PARTITION BY location_type ORDER BY prioridad, num) AS final_rn
+    FROM candidatos
+    WHERE rn = 1
+) t
+WHERE final_rn = 1;
