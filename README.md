@@ -105,3 +105,67 @@ CREATE TABLE `locatios` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+WITH numbered AS (
+    SELECT
+        id,
+        location_code,
+        location_type,
+        SUBSTRING_INDEX(location_code, '-', 1) AS prefijo,
+        CAST(SUBSTRING_INDEX(location_code, '-', -1) AS UNSIGNED) AS num
+    FROM conformal_inventory_db.locatios
+    WHERE location_type IN ('BANDEJA','CAJON')
+),
+prefijos AS (
+    -- Obtiene el prefijo (CFB, CFC) usado por cada location_type
+    SELECT location_type, MIN(prefijo) AS prefijo
+    FROM numbered
+    GROUP BY location_type
+),
+virtual AS (
+    -- Fila ficticia con correlativo 000 para forzar el barrido desde el inicio
+    SELECT
+        0 AS id,
+        CONCAT(prefijo, '-000') AS location_code,
+        location_type,
+        0 AS num
+    FROM prefijos
+),
+combined AS (
+    SELECT id, location_code, location_type, num FROM numbered
+    UNION ALL
+    SELECT id, location_code, location_type, num FROM virtual
+),
+with_next AS (
+    SELECT
+        id, location_code, location_type, num,
+        LEAD(num) OVER (PARTITION BY location_type ORDER BY num) AS next_num
+    FROM combined
+),
+candidatos AS (
+    -- Caso 1: hay un salto en la secuencia -> nos quedamos con el primero que aparece
+    SELECT
+        id, location_code, location_type, num,
+        0 AS prioridad,
+        ROW_NUMBER() OVER (PARTITION BY location_type ORDER BY num) AS rn
+    FROM with_next
+    WHERE next_num IS NOT NULL AND next_num <> num + 1
+
+    UNION ALL
+
+    -- Caso 2 (fallback): no hay saltos -> tomamos el último registro real (ignorando el virtual)
+    SELECT
+        id, location_code, location_type, num,
+        1 AS prioridad,
+        ROW_NUMBER() OVER (PARTITION BY location_type ORDER BY num DESC) AS rn
+    FROM with_next
+    WHERE next_num IS NULL AND id <> 0
+)
+SELECT id, location_code, location_type
+FROM (
+    SELECT
+        id, location_code, location_type,
+        ROW_NUMBER() OVER (PARTITION BY location_type ORDER BY prioridad, num) AS final_rn
+    FROM candidatos
+    WHERE rn = 1
+) t
+WHERE final_rn = 1;
