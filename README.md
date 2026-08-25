@@ -86,3 +86,37 @@ if (document.readyState === 'complete') {
 }
 
 </script>
+
+
+WITH parsed AS (
+    SELECT
+        id,
+        location_code,
+        location_type,
+        state,
+        SUBSTRING_INDEX(location_code, '-', 1) AS prefix,
+        CAST(SUBSTRING_INDEX(location_code, '-', -1) AS UNSIGNED) AS num
+    FROM locatios
+),
+gaps AS (
+    SELECT
+        prefix,
+        num,
+        location_code,
+        LAG(num) OVER (PARTITION BY prefix ORDER BY num) AS prev_num,
+        LAG(location_code) OVER (PARTITION BY prefix ORDER BY num) AS prev_code
+    FROM parsed
+),
+first_gap AS (
+    SELECT
+        prefix,
+        prev_code AS ultimo_correlativo_antes_del_hueco,
+        num AS siguiente_encontrado,
+        ROW_NUMBER() OVER (PARTITION BY prefix ORDER BY num) AS rn
+    FROM gaps
+    WHERE num - prev_num > 1
+)
+SELECT prefix, ultimo_correlativo_antes_del_hueco, siguiente_encontrado
+FROM first_gap
+WHERE rn = 1
+ORDER BY prefix;
